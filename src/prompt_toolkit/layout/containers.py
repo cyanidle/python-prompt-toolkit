@@ -31,7 +31,14 @@ from prompt_toolkit.formatted_text.utils import (
 )
 from prompt_toolkit.key_binding import KeyBindingsBase
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
-from prompt_toolkit.utils import get_cwidth, take_using_weights, to_int, to_str
+from prompt_toolkit.utils import (
+    get_cursor_column,
+    get_cwidth,
+    split_char_clusters,
+    take_using_weights,
+    to_int,
+    to_str,
+)
 
 from .controls import (
     DummyControl,
@@ -2015,7 +2022,7 @@ class Window(Container):
                     new_screen.zero_width_escapes[y + ypos][x + xpos] += text
                     continue
 
-                for c in text:
+                for c in split_char_clusters(text):
                     char = _CHAR_CACHE[c, style]
                     char_width = char.width
 
@@ -2044,6 +2051,7 @@ class Window(Container):
                     # Set character in screen and shift 'x'.
                     if x >= 0 and y >= 0 and x < width:
                         new_buffer_row[x + xpos] = char
+                        cell_x = x  # Column where this cell starts.
 
                         # When we print a multi width character, make sure
                         # to erase the neighbors positions in the screen.
@@ -2071,14 +2079,33 @@ class Window(Container):
                                         prev_char.char + c, prev_char.style
                                     ]
                                     new_buffer_row[x + xpos - pw] = char2
+                                    cell_x = x - pw
+
+                                    # The merged cluster can be wider than the
+                                    # cell it replaced (a variation selector
+                                    # turns a narrow base character into a two
+                                    # column emoji). Claim the extra columns,
+                                    # like a multi width character does,
+                                    # otherwise the next character is written
+                                    # into the second column of the cluster and
+                                    # skipped by the renderer.
+                                    if char2.width > pw:
+                                        x += char2.width - pw
+                                        for i in range(1, char2.width):
+                                            new_buffer_row[x + xpos - i] = empty_char
 
                         # Keep track of write position for each character.
-                        current_rowcol_to_yx[lineno, col + skipped] = (
-                            y + ypos,
-                            x + xpos,
-                        )
+                        # (A cluster can hold more than one code point: a base
+                        # character and its variation selectors. Buffer
+                        # positions are per code point, so register them all,
+                        # at the start of the cell they share.)
+                        for i in range(len(c)):
+                            current_rowcol_to_yx[lineno, col + skipped + i] = (
+                                y + ypos,
+                                cell_x + xpos,
+                            )
 
-                    col += 1
+                    col += len(c)
                     x += char_width
             return x, y
 
@@ -2531,7 +2558,9 @@ class Window(Container):
             current_scroll=self.horizontal_scroll,
             scroll_offset_start=offsets.left,
             scroll_offset_end=offsets.right,
-            cursor_pos=get_cwidth(current_line_text[: ui_content.cursor_position.x]),
+            cursor_pos=get_cursor_column(
+                current_line_text, ui_content.cursor_position.x
+            ),
             window_size=width - current_line_prefix_width,
             # We can only analyze the current line. Calculating the width off
             # all the lines is too expensive.

@@ -4,7 +4,61 @@ import itertools
 
 import pytest
 
-from prompt_toolkit.utils import take_using_weights
+from prompt_toolkit.utils import (
+    get_cursor_column,
+    get_cwidth,
+    split_char_clusters,
+    take_using_weights,
+)
+
+
+def test_get_cwidth_variation_selector():
+    # VS16 (U+FE0F) selects the emoji presentation of its base character,
+    # which is two columns wide for a narrow base character.
+    assert get_cwidth("⚠") == 1
+    assert get_cwidth("⚠️") == 2
+    assert get_cwidth("a⚠️b") == 4
+
+    # A base character that is wide by itself stays two columns.
+    assert get_cwidth("⌚") == 2
+    assert get_cwidth("⌚️") == 2
+
+    # A combining accent never changes the width of its base character.
+    assert get_cwidth("e\u0301") == 1
+
+
+def test_split_char_clusters():
+    # Without variation selectors, the string is returned as is.
+    assert split_char_clusters("") == ""
+    assert split_char_clusters("abc") == "abc"
+
+    # A base character keeps the variation selectors that follow it.
+    assert split_char_clusters("a⚠️b") == ["a", "⚠️", "b"]
+    assert split_char_clusters("⚠\ufe0e") == ["⚠\ufe0e"]
+
+    # A variation selector without a base character is its own cluster.
+    assert split_char_clusters("\ufe0f") == ["\ufe0f"]
+
+
+def test_get_cursor_column_inside_cluster():
+    line = "x  ⚠️ y"  # 3 4 are the code points of the cluster.
+
+    # Cursor before, inside and after the cluster.
+    assert get_cursor_column(line, 3) == 3
+    assert get_cursor_column(line, 4) == 3
+    assert get_cursor_column(line, 5) == 5
+
+    # Consecutive variation selectors are all part of the same cluster.
+    assert get_cursor_column("⚠\ufe0f\ufe0f", 1) == 0
+    assert get_cursor_column("⚠\ufe0f\ufe0f", 2) == 0
+
+    # A cursor at the end of the string counts the whole string.
+    assert get_cursor_column("⚠️", 2) == 2
+
+    # Without variation selectors: the width of the prefix.
+    assert get_cursor_column("abc", 0) == 0
+    assert get_cursor_column("abc", 2) == 2
+    assert get_cursor_column("abc", 3) == 3
 
 
 def test_using_weights():

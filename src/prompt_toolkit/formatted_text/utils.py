@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import cast
 
-from prompt_toolkit.utils import get_cwidth
+from prompt_toolkit.utils import get_cwidth, split_char_clusters
 
 from .base import (
     AnyFormattedText,
@@ -56,9 +56,9 @@ def fragment_list_width(fragments: StyleAndTextTuples) -> int:
     """
     ZeroWidthEscape = "[ZeroWidthEscape]"
     return sum(
-        get_cwidth(c)
+        get_cwidth(cluster)
         for item in fragments
-        for c in item[1]
+        for cluster in split_char_clusters(item[1])
         if ZeroWidthEscape not in item[0]
     )
 

@@ -5,7 +5,7 @@ import signal
 import sys
 import threading
 from collections import deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from contextlib import AbstractContextManager
 from typing import (
     Generic,
@@ -18,6 +18,8 @@ __all__ = [
     "Event",
     "DummyContext",
     "get_cwidth",
+    "get_cursor_column",
+    "split_char_clusters",
     "suspend_to_background_supported",
     "is_conemu_ansi",
     "is_windows",
@@ -121,6 +123,61 @@ class DummyContext(AbstractContextManager[None]):
         pass
 
 
+# Variation selectors. A base character followed by VS16 (U+FE0F) is rendered
+# by the terminal as a single 2 column emoji glyph (e.g. "⚠" + VS16), while
+# VS15 (U+FE0E) asks for the text presentation instead.
+_VARIATION_SELECTORS = ("\ufe0e", "\ufe0f")
+
+
+def split_char_clusters(string: str) -> Sequence[str]:
+    """
+    Split a string in the clusters that a terminal renders as a single glyph.
+
+    A cluster is a base character plus the variation selectors that follow it.
+    They have to be measured together: a trailing VS16 selects the emoji
+    presentation of its base character, which is two columns wide for a narrow
+    base like "⚠".  Measuring the two code points separately gives 1 + 0 and
+    makes our screen model disagree with the terminal, which desynchronises
+    the renderer (the terminal wraps the line, we don't know about it).
+
+    Other zero width modifiers (combining accents, for instance) are left as
+    single code points: they never change the width of their base character,
+    so summing them per code point is already correct.
+
+    The string itself is returned when it holds no variation selectors.
+    """
+    if "\ufe0e" not in string and "\ufe0f" not in string:
+        return string
+
+    clusters: list[str] = []
+
+    for c in string:
+        if clusters and c in _VARIATION_SELECTORS:
+            clusters[-1] += c
+        else:
+            clusters.append(c)
+
+    return clusters
+
+
+def _cluster_width(cluster: str) -> int:
+    """
+    Width of a cluster, as returned by `split_char_clusters`.
+
+    VS16 is the only code point that changes the width of a cluster: it selects
+    the emoji presentation of its base character, which is two columns wide
+    when that base character is narrow. (This is not delegated to `wcswidth`:
+    only recent `wcwidth` releases know about VS16.)
+    """
+    width = max(0, wcwidth(cluster[0]))
+
+    for c in cluster[1:]:
+        if c == "\ufe0f" and width == 1:
+            width = 2
+
+    return width
+
+
 class _CharSizesCache(dict[str, int]):
     """
     Cache for wcwidth sizes.
@@ -143,7 +200,14 @@ class _CharSizesCache(dict[str, int]):
         if len(string) == 1:
             result = max(0, wcwidth(string))
         else:
-            result = sum(self[c] for c in string)
+            # Measure per cluster, not per code point: a variation selector
+            # can change the width of the cluster it belongs to (see
+            # `split_char_clusters`), so the widths of the code points can't
+            # simply be summed.
+            result = sum(
+                self[cluster] if len(cluster) == 1 else _cluster_width(cluster)
+                for cluster in split_char_clusters(string)
+            )
 
         # Store in cache.
         self[string] = result
@@ -170,6 +234,20 @@ def get_cwidth(string: str) -> int:
     Return width of a string. Wrapper around ``wcwidth``.
     """
     return _CHAR_SIZES_CACHE[string]
+
+
+def get_cursor_column(string: str, index: int) -> int:
+    """
+    Width of the part of ``string`` that precedes the cursor at ``index``.
+
+    A cursor can sit inside a cluster: pressing left once right after an emoji
+    leaves it between the base character and its variation selector. Those code
+    points are drawn on one cell, so the cursor belongs to the start of it.
+    """
+    while 0 < index < len(string) and string[index] in _VARIATION_SELECTORS:
+        index -= 1
+
+    return get_cwidth(string[:index])
 
 
 def suspend_to_background_supported() -> bool:

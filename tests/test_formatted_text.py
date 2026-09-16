@@ -9,7 +9,7 @@ from prompt_toolkit.formatted_text import (
     merge_formatted_text,
     to_formatted_text,
 )
-from prompt_toolkit.formatted_text.utils import split_lines
+from prompt_toolkit.formatted_text.utils import fragment_list_width, split_lines
 
 
 def test_basic_html():
@@ -336,3 +336,12 @@ def test_split_lines_4():
         [("class:a", "line1")],
         [("class:a", "")],
     ]
+
+
+def test_fragment_list_width_variation_selector():
+    "A VS16 cluster counts as one 2 column glyph, not as two code points."
+    assert fragment_list_width([("", "⚠️")]) == 2
+    assert fragment_list_width([("", "⚠")]) == 1
+    assert fragment_list_width([("", "a⚠️b")]) == 4
+    # Escape sequences are still ignored.
+    assert fragment_list_width([("[ZeroWidthEscape]", "⚠️")]) == 0
